@@ -1,0 +1,8 @@
+{
+  "name": "BioEvolve",
+  "description": "Health Intelligence dashboard with AI-powered exam analysis and wearable integration.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": []
+}

@@ -1,0 +1,85 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper Primitives
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isVerifiedUser() { return request.auth.token.email_verified == true; }
+
+    // Validation Helpers
+    function isValidUserProfile(data) {
+      return data.bioScore is number && 
+             data.bioScore >= 0 && data.bioScore <= 100 &&
+             (!data.keys().hasAny(['lastUpdated']) || data.lastUpdated is timestamp);
+    }
+
+    function isValidOnboarding(data) {
+      return data.age is number && data.age > 0 && data.age < 150 &&
+             data.weight is number && data.weight > 0 && data.weight < 500 &&
+             data.onboardingComplete == true &&
+             data.keys().hasAll(['age', 'weight', 'onboardingComplete']);
+    }
+
+    function isValidExam(data) {
+      return data.date is string && data.date.size() <= 64 &&
+             data.analyte is string && data.analyte.size() <= 128 &&
+             data.value is number &&
+             data.unit is string && data.unit.size() <= 32 &&
+             (!data.keys().hasAny(['referenceRange']) || (data.referenceRange is string && data.referenceRange.size() <= 256)) &&
+             (!data.keys().hasAny(['imageUrl']) || (data.imageUrl is string && data.imageUrl.size() <= 1048576)); // Base64 limit
+    }
+
+    function isValidWearable(data) {
+      return data.timestamp is string && data.timestamp.size() <= 64 &&
+             data.steps is number && data.heartRate is number;
+    }
+
+    function isValidInsight(data) {
+      return data.timestamp is string &&
+             data.text is string && data.text.size() <= 2000 &&
+             data.actionableTip is string && data.actionableTip.size() <= 500;
+    }
+
+    // 1. User Profiles
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow create: if isOwner(userId) && isValidUserProfile(incoming()) && incoming().keys().size() <= 5;
+      allow update: if isOwner(userId) && isValidUserProfile(incoming()) && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['bioScore', 'lastUpdated']);
+
+      match /profile/initial {
+        allow get: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidOnboarding(incoming());
+        allow update: if isOwner(userId) && isValidOnboarding(incoming()) &&
+                      incoming().diff(existing()).affectedKeys().hasOnly(['age', 'weight']);
+      }
+
+      match /exams/{examId} {
+        allow list: if isOwner(userId);
+        allow get: if isOwner(userId) && isValidId(examId);
+        allow create: if isOwner(userId) && isValidExam(incoming()) && isValidId(examId);
+        allow update: if isOwner(userId) && isValidExam(incoming()) && 
+                      incoming().diff(existing()).affectedKeys().hasOnly(['date', 'analyte', 'value', 'unit', 'referenceRange']);
+        allow delete: if isOwner(userId);
+      }
+
+      match /wearableData/{dataId} {
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidWearable(incoming());
+      }
+
+      match /insights/{insightId} {
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidInsight(incoming());
+      }
+    }
+  }
+}
