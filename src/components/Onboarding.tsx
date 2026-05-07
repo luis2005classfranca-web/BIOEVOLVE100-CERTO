@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { db } from '../lib/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { motion } from 'motion/react';
 import { ArrowRight, User } from 'lucide-react';
 
@@ -18,19 +18,24 @@ export default function Onboarding({ userId, onComplete }: OnboardingProps) {
     e.preventDefault();
     setIsSubmitting(true);
     try {
+      // Save initial profile data
       await setDoc(doc(db, `users/${userId}/profile/initial`), {
         age: parseInt(age),
         weight: parseFloat(weight),
         onboardingComplete: true,
-        createdAt: new Date()
+        createdAt: serverTimestamp()
       });
+      
+      // Initialize main user document
       await setDoc(doc(db, `users/${userId}`), {
         bioScore: 0,
-        lastUpdated: new Date()
+        lastUpdated: serverTimestamp()
       }, { merge: true });
+      
       onComplete();
     } catch (error) {
-      console.error("Error saving onboarding", error);
+      console.error("Error saving onboarding:", error);
+      alert("Erro ao salvar perfil. Por favor, tente novamente.");
     } finally {
       setIsSubmitting(false);
     }

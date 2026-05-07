@@ -56,8 +56,135 @@ export default function App() {
     const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
     const [insight, setInsight] = useState<HealthInsight | null>(null);
     const [isGeneratingInsight, setIsGeneratingInsight] = useState(false);
+    const [isCameraActive, setIsCameraActive] = useState(false);
 
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+
+    // Camera Functions
+    const startCamera = async () => {
+        setIsCameraActive(true);
+        setErrorMessage(null);
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                video: { facingMode: 'environment' } 
+            });
+            if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+            }
+        } catch (error) {
+            console.error("Camera access error:", error);
+            setErrorMessage("Não foi possível acessar a câmera. Verifique as permissões.");
+            setIsCameraActive(false);
+        }
+    };
+
+    const stopCamera = () => {
+        if (videoRef.current && videoRef.current.srcObject) {
+            const stream = videoRef.current.srcObject as MediaStream;
+            const tracks = stream.getTracks();
+            tracks.forEach(track => track.stop());
+            videoRef.current.srcObject = null;
+        }
+        setIsCameraActive(false);
+    };
+
+    const captureImage = async () => {
+        if (videoRef.current && canvasRef.current) {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            const ctx = canvas.getContext('2d');
+            ctx?.drawImage(video, 0, 0);
+            
+            const base64 = canvas.toDataURL('image/jpeg', 0.8);
+            stopCamera();
+            
+            setIsProcessing(true);
+            setErrorMessage(null);
+            setScanResult(null);
+
+            try {
+                const compressed = await compressImage(base64);
+                const extracted = await extractHealthDataFromImage(compressed, 'image/jpeg');
+
+                if (!extracted || extracted.length === 0) {
+                    setErrorMessage("Nenhum dado de saúde claro foi encontrado na foto. Tente uma captura mais nítida.");
+                    return;
+                }
+
+                const records: ExamRecord[] = extracted.map(item => ({
+                    ...item,
+                    id: '',
+                    imageUrl: compressed
+                } as ExamRecord));
+                setScanResult(records);
+            } catch (error) {
+                console.error("Camera extraction failed", error);
+                setErrorMessage(error instanceof Error ? error.message : "Erro ao processar foto da câmera.");
+            } finally {
+                setIsProcessing(false);
+            }
+        }
+    };
+
+    // Global Paste Listener
+    useEffect(() => {
+        const handlePaste = async (event: ClipboardEvent) => {
+            const items = event.clipboardData?.items;
+            if (!items) return;
+
+            for (const item of items) {
+                if (item.type.indexOf('image') !== -1) {
+                    const blob = item.getAsFile();
+                    if (!blob) continue;
+
+                    // Switch to scan tab immediately for feedback
+                    setActiveTab('scan');
+                    setIsProcessing(true);
+                    setErrorMessage(null);
+                    setScanResult(null);
+
+                    const reader = new FileReader();
+                    reader.onloadend = async () => {
+                        const base64 = reader.result as string;
+                        try {
+                            const compressed = await compressImage(base64);
+                            const extracted = await extractHealthDataFromImage(compressed, item.type);
+                            
+                            if (!extracted || extracted.length === 0) {
+                                setErrorMessage("Nenhum dado de saúde claro foi encontrado no print. Verifique se a imagem está nítida e tente novamente.");
+                                return;
+                            }
+
+                            const records: ExamRecord[] = extracted.map(item => ({
+                                ...item,
+                                id: '',
+                                imageUrl: compressed
+                            } as ExamRecord));
+                            setScanResult(records);
+                        } catch (error) {
+                            console.error("Paste extraction failed", error);
+                            setErrorMessage(error instanceof Error ? error.message : "Erro ao processar imagem colada.");
+                        } finally {
+                            setIsProcessing(false);
+                        }
+                    };
+                    reader.onerror = () => {
+                        setErrorMessage("Falha ao ler imagem da área de transferência.");
+                        setIsProcessing(false);
+                    };
+                    reader.readAsDataURL(blob);
+                    break;
+                }
+            }
+        };
+
+        window.addEventListener('paste', handlePaste);
+        return () => window.removeEventListener('paste', handlePaste);
+    }, [user, isAuthReady]);
 
     // Check onboarding status
     useEffect(() => {
@@ -524,14 +651,42 @@ export default function App() {
                             exit={{ opacity: 0, scale: 0.95 }}
                             className="space-y-6"
                         >
-                            <div className="bg-white p-8 rounded-3xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-center space-y-4">
-                                <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center">
-                                    <Camera size={40} />
-                                </div>
-                                <div>
-                                    <h2 className="text-xl font-bold text-slate-800">Digitalizar Exame</h2>
-                                    <p className="text-sm text-slate-500 mt-1">Transforme papéis antigos em dados inteligentes</p>
-                                </div>
+                    <div className="bg-white p-8 rounded-3xl border-2 border-dashed border-slate-200 flex flex-col items-center justify-center text-center space-y-4">
+                                {isCameraActive ? (
+                                    <div className="w-full aspect-square bg-black rounded-2xl overflow-hidden relative">
+                                        <video 
+                                            ref={videoRef} 
+                                            autoPlay 
+                                            playsInline 
+                                            className="w-full h-full object-cover"
+                                        />
+                                        <div className="absolute bottom-4 left-0 right-0 flex justify-center gap-4">
+                                            <button 
+                                                onClick={stopCamera}
+                                                className="p-3 bg-white/20 backdrop-blur-md text-white rounded-full hover:bg-white/30"
+                                            >
+                                                <X size={24} />
+                                            </button>
+                                            <button 
+                                                onClick={captureImage}
+                                                className="w-16 h-16 bg-white rounded-full flex items-center justify-center text-indigo-600 shadow-xl border-4 border-indigo-100 active:scale-95 transition-transform"
+                                            >
+                                                <div className="w-12 h-12 border-2 border-indigo-600 rounded-full" />
+                                            </button>
+                                        </div>
+                                        <canvas ref={canvasRef} className="hidden" />
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="w-20 h-20 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center">
+                                            <Camera size={40} />
+                                        </div>
+                                        <div>
+                                            <h2 className="text-xl font-bold text-slate-800">Processar Print</h2>
+                                            <p className="text-sm text-slate-500 mt-1">Tire um print do seu exame e cole (Ctrl+V) aqui</p>
+                                        </div>
+                                    </>
+                                )}
                                 <input
                                     type="file"
                                     accept="image/*,application/pdf"
@@ -539,13 +694,28 @@ export default function App() {
                                     ref={fileInputRef}
                                     onChange={handleImageUpload}
                                 />
-                                <button
-                                    onClick={() => fileInputRef.current?.click()}
-                                    disabled={isProcessing}
-                                    className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all disabled:opacity-50"
-                                >
-                                    {isProcessing ? 'Processando com IA...' : 'Tirar Foto ou Upload (PDF/Imagem)'}
-                                </button>
+                                <div className="w-full flex flex-col gap-2">
+                                    {!isCameraActive && (
+                                        <>
+                                            <button
+                                                onClick={startCamera}
+                                                disabled={isProcessing}
+                                                className="w-full bg-indigo-600 text-white py-4 rounded-2xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                                            >
+                                                <Camera size={20} />
+                                                Usar Câmera
+                                            </button>
+                                            <button
+                                                onClick={() => fileInputRef.current?.click()}
+                                                disabled={isProcessing}
+                                                className="w-full bg-white text-indigo-600 border-2 border-indigo-50 py-4 rounded-2xl font-bold hover:bg-indigo-50 transition-all disabled:opacity-50"
+                                            >
+                                                {isProcessing ? 'Analisando documento...' : 'Selecionar Arquivo'}
+                                            </button>
+                                            <p className="text-[10px] text-slate-400 font-bold uppercase">ou simplesmente cole (Ctrl+V)</p>
+                                        </>
+                                    )}
+                                </div>
                             </div>
 
                             {errorMessage && (

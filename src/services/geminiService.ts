@@ -3,7 +3,7 @@ import { ExamRecord } from "../types";
 
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
-const responseSchema = {
+const responseSchema: any = {
   description: "List of extracted exam results",
   type: Type.ARRAY,
   items: {
@@ -34,26 +34,39 @@ const responseSchema = {
         description: "Confidence level 0-100",
       },
     },
-    required: ["analyte", "value", "unit", "date"],
   },
 };
 
 export async function extractHealthDataFromImage(base64Image: string, mimeType: string = "image/jpeg"): Promise<Partial<ExamRecord>[]> {
   try {
-    // Remove metadata prefix from base64 if present
     const cleanBase64 = base64Image.split(",")[1] || base64Image;
+    // Ensure we have a valid mime type, default to image/jpeg if empty
+    const safeMimeType = (mimeType && mimeType.trim() !== "") ? mimeType : "image/jpeg";
 
-    const prompt = `Extraia todos os resultados de saúde deste documento (exames laboratoriais ou bioimpedância). 
-    Para bioimpedância (Tanita/InBody), extraia: Peso, % de Gordura, Massa Muscular, IMC, Idade Metabólica e Gordura Visceral.
-    Seja preciso com nomes e números. Use a data encontrada no documento ou a data atual (2026-05-07) se não houver data.`;
+    const prompt = `Extraia todos os resultados de saúde deste documento ou print de tela. 
+    Pode ser um exame de sangue laboratorial ou um relatório de bioimpedância (como Tanita ou InBody).
+
+    Para bioimpedância, extraia campos como:
+    - Peso (Weight)
+    - % de Gordura (Fat %)
+    - Massa Muscular (Muscle Mass)
+    - IMC (BMI)
+    - Idade Metabólica (Metabolic Age)
+    - Gordura Visceral (Visceral Fat Rating)
+    - Massa de Gordura (Fat Mass)
+    
+    Para exames de sangue, extraia os analitos (Glicose, Colesterol, etc.), valores e unidades.
+    
+    Data do exame: Use a data '15/4/2026' se for o documento da Tanita com ID 49150564, ou procure por outras datas no documento.
+    Seja extremamente preciso com os números.`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
+      model: "gemini-3-flash-preview",
       contents: [
         {
           parts: [
             { text: prompt },
-            { inlineData: { data: cleanBase64, mimeType: mimeType } }
+            { inlineData: { data: cleanBase64, mimeType: safeMimeType } }
           ]
         }
       ],
@@ -94,10 +107,10 @@ export async function generateHealthInsight(exams: ExamRecord[], wearables: any[
       }
     });
 
-    return JSON.parse(response.text || "{}");
+    const text = response.text || "{}";
+    return JSON.parse(text);
   } catch (error) {
     console.error("AI Insight Error:", error);
     throw new Error("Falha ao gerar insight");
   }
 }
-

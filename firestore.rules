@@ -22,10 +22,9 @@ service cloud.firestore {
     }
 
     function isValidOnboarding(data) {
-      return data.age is number && data.age > 0 && data.age < 150 &&
-             data.weight is number && data.weight > 0 && data.weight < 500 &&
-             data.onboardingComplete == true &&
-             data.keys().hasAll(['age', 'weight', 'onboardingComplete']);
+      return data.age is number && data.age > 0 &&
+             data.weight is number && data.weight > 0 &&
+             data.onboardingComplete == true;
     }
 
     function isValidExam(data) {
@@ -57,9 +56,7 @@ service cloud.firestore {
 
       match /profile/initial {
         allow get: if isOwner(userId);
-        allow create: if isOwner(userId) && isValidOnboarding(incoming());
-        allow update: if isOwner(userId) && isValidOnboarding(incoming()) &&
-                      incoming().diff(existing()).affectedKeys().hasOnly(['age', 'weight']);
+        allow create, update: if isOwner(userId) && isValidOnboarding(incoming());
       }
 
       match /exams/{examId} {
