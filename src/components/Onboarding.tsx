@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
-import { db } from '../lib/firebase';
-import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
+import { supabase } from '../lib/supabase';
 import { motion } from 'motion/react';
 import { ArrowRight, User } from 'lucide-react';
 
@@ -18,19 +17,20 @@ export default function Onboarding({ userId, onComplete }: OnboardingProps) {
     e.preventDefault();
     setIsSubmitting(true);
     try {
-      // Save initial profile data
-      await setDoc(doc(db, `users/${userId}/profile/initial`), {
-        age: parseInt(age),
-        weight: parseFloat(weight),
-        onboardingComplete: true,
-        createdAt: serverTimestamp()
-      });
+      // Upsert profile data
+      const { error } = await supabase
+        .from('profiles')
+        .upsert({
+          id: userId,
+          age: parseInt(age),
+          weight: parseFloat(weight),
+          onboarding_complete: true,
+          bio_score: 0,
+          last_updated: new Date().toISOString(),
+          created_at: new Date().toISOString()
+        });
       
-      // Initialize main user document
-      await setDoc(doc(db, `users/${userId}`), {
-        bioScore: 0,
-        lastUpdated: serverTimestamp()
-      }, { merge: true });
+      if (error) throw error;
       
       onComplete();
     } catch (error) {

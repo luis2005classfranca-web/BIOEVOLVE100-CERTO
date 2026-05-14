@@ -1,6 +1,6 @@
 import React from 'react';
 import { LogIn } from 'lucide-react';
-import { loginWithGoogle } from '../lib/firebase';
+import { loginWithGoogle } from '../lib/supabase';
 import { motion } from 'motion/react';
 
 export default function LoginScreen() {

@@ -37,9 +37,8 @@ import {
 import { QRCodeSVG } from 'qrcode.react';
 import { extractHealthDataFromImage, generateHealthInsight } from './services/geminiService';
 import { ExamRecord, WearableData, HealthInsight } from './types';
-import { useAuth } from './components/FirebaseProvider';
-import { auth, loginWithGoogle, logout, db, handleFirestoreError, OperationType } from './lib/firebase';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, getDoc, deleteDoc } from 'firebase/firestore';
+import { useAuth } from './components/AuthProvider';
+import { supabase } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
 import Onboarding from './components/Onboarding';
 
@@ -191,11 +190,15 @@ export default function App() {
     useEffect(() => {
         if (!user || !isAuthReady) return;
 
-        const profilePath = `users/${user.uid}/profile/initial`;
         const checkOnboarding = async () => {
             try {
-                const docSnap = await getDoc(doc(db, profilePath));
-                if (docSnap.exists() && docSnap.data().onboardingComplete) {
+                const { data, error } = await supabase
+                    .from('profiles')
+                    .select('onboarding_complete')
+                    .eq('id', user.id)
+                    .single();
+                
+                if (data?.onboarding_complete) {
                     setOnboardingComplete(true);
                 } else {
                     setOnboardingComplete(false);
@@ -208,60 +211,79 @@ export default function App() {
         checkOnboarding();
     }, [user, isAuthReady]);
 
-    // Listeners for Firestore data
+    // Listeners for Supabase data
     useEffect(() => {
         if (!user || !isAuthReady || onboardingComplete !== true) return;
 
-        const examsPath = `users/${user.uid}/exams`;
-        const unsubscribeExams = onSnapshot(
-            query(collection(db, examsPath), orderBy('date', 'desc')),
-            (snapshot) => {
-                const records = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as ExamRecord));
-                setExams(records);
-            },
-            (error) => handleFirestoreError(error, OperationType.LIST, examsPath)
-        );
+        // Initial Feeds
+        const fetchExams = async () => {
+            const { data } = await supabase
+                .from('exams')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('date', { ascending: false });
+            if (data) setExams(data as ExamRecord[]);
+        };
 
-        const wearablePath = `users/${user.uid}/wearableData`;
-        const unsubscribeWearable = onSnapshot(
-            query(collection(db, wearablePath), orderBy('timestamp', 'asc')),
-            (snapshot) => {
-                const records = snapshot.docs.map(doc => ({ ...doc.data() } as WearableData));
-                setWearableData(records.length > 0 ? records : []);
-            },
-            (error) => handleFirestoreError(error, OperationType.LIST, wearablePath)
-        );
+        const fetchWearable = async () => {
+            const { data } = await supabase
+                .from('wearable_data')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('timestamp', { ascending: true });
+            if (data) setWearableData(data as WearableData[]);
+        };
 
-        // Get BioScore
-        const userPath = `users/${user.uid}`;
-        const unsubscribeUser = onSnapshot(
-            doc(db, userPath),
-            (docSnap) => {
-                if (docSnap.exists()) {
-                    setBioScore(docSnap.data().bioScore || 0);
-                }
-            },
-            (error) => handleFirestoreError(error, OperationType.GET, userPath)
-        );
+        const fetchProfile = async () => {
+            const { data } = await supabase
+                .from('profiles')
+                .select('bio_score')
+                .eq('id', user.id)
+                .single();
+            if (data) setBioScore(data.bio_score || 0);
+        };
 
-        // Get Insights
-        const insightsPath = `users/${user.uid}/insights`;
-        const unsubscribeInsights = onSnapshot(
-            query(collection(db, insightsPath), orderBy('timestamp', 'desc')),
-            (snapshot) => {
-                if (!snapshot.empty) {
-                    const records = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as HealthInsight));
-                    setInsight(records[0]);
-                }
-            },
-            (error) => console.error("Error fetching insights:", error)
-        );
+        const fetchInsights = async () => {
+            const { data } = await supabase
+                .from('insights')
+                .select('*')
+                .eq('user_id', user.id)
+                .order('timestamp', { ascending: false })
+                .limit(1);
+            if (data && data.length > 0) setInsight(data[0] as HealthInsight);
+        };
+
+        fetchExams();
+        fetchWearable();
+        fetchProfile();
+        fetchInsights();
+
+        // Real-time Subscriptions
+        const examsSub = supabase
+            .channel('exams-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'exams', filter: `user_id=eq.${user.id}` }, fetchExams)
+            .subscribe();
+
+        const wearableSub = supabase
+            .channel('wearable-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'wearable_data', filter: `user_id=eq.${user.id}` }, fetchWearable)
+            .subscribe();
+
+        const profileSub = supabase
+            .channel('profile-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` }, fetchProfile)
+            .subscribe();
+
+        const insightsSub = supabase
+            .channel('insights-changes')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'insights', filter: `user_id=eq.${user.id}` }, fetchInsights)
+            .subscribe();
 
         return () => {
-            unsubscribeExams();
-            unsubscribeWearable();
-            unsubscribeUser();
-            unsubscribeInsights();
+            supabase.removeChannel(examsSub);
+            supabase.removeChannel(wearableSub);
+            supabase.removeChannel(profileSub);
+            supabase.removeChannel(insightsSub);
         };
     }, [user, isAuthReady, onboardingComplete]);
 
@@ -272,14 +294,16 @@ export default function App() {
         try {
             const data = await generateHealthInsight(exams.slice(0, 5), wearableData.slice(-7));
 
-            const newInsight: HealthInsight = {
-                timestamp: new Date().toISOString(),
-                text: data.text,
-                actionableTip: data.actionableTip
-            };
+            const { error } = await supabase
+                .from('insights')
+                .insert({
+                    user_id: user.id,
+                    timestamp: new Date().toISOString(),
+                    text: data.text,
+                    actionable_tip: data.actionableTip
+                });
 
-            const insightsPath = `users/${user.uid}/insights`;
-            await addDoc(collection(db, insightsPath), newInsight);
+            if (error) throw error;
         } catch (error) {
             console.error(error);
             setErrorMessage("Não foi possível gerar seu insight no momento.");
@@ -365,21 +389,25 @@ export default function App() {
     const deleteExam = async (examId: string) => {
         if (!user || !window.confirm("Tem certeza que deseja apagar este exame?")) return;
         
-        const examDocPath = `users/${user.uid}/exams/${examId}`;
         try {
-            await deleteDoc(doc(db, examDocPath));
+            const { error } = await supabase
+                .from('exams')
+                .delete()
+                .eq('id', examId)
+                .eq('user_id', user.id);
+            
+            if (error) throw error;
             setErrorMessage(null);
         } catch (error) {
-            handleFirestoreError(error, OperationType.DELETE, examDocPath);
+            console.error("Delete error:", error);
+            setErrorMessage("Erro ao apagar exame.");
         }
     };
 
     const confirmScan = async () => {
         if (scanResult && user) {
-            const examsPath = `users/${user.uid}/exams`;
             try {
-                // Deduplication check: Filter out results that already exist in our local exams state
-                // We check for exact matches in date, analyte, and value
+                // Deduplication check
                 const duplicates = scanResult.filter(newRecord => 
                     exams.some(existing => 
                         existing.date === newRecord.date && 
@@ -401,12 +429,20 @@ export default function App() {
                     return;
                 }
 
-                await Promise.all(newRecords.map(record =>
-                    addDoc(collection(db, examsPath), {
-                        ...record,
-                        createdAt: serverTimestamp()
-                    })
-                ));
+                const { error } = await supabase
+                    .from('exams')
+                    .insert(newRecords.map(record => ({
+                        user_id: user.id,
+                        date: record.date,
+                        analyte: record.analyte,
+                        value: record.value,
+                        unit: record.unit,
+                        reference_range: record.referenceRange,
+                        imageUrl: record.imageUrl,
+                        created_at: new Date().toISOString()
+                    })));
+
+                if (error) throw error;
 
                 if (duplicates.length > 0) {
                     alert(`${duplicates.length} exame(s) foram ignorados por já estarem cadastrados.`);
@@ -417,7 +453,8 @@ export default function App() {
                 setIsScanning(false);
                 setActiveTab('timeline');
             } catch (error) {
-                handleFirestoreError(error, OperationType.CREATE, examsPath);
+                console.error("Save error:", error);
+                setErrorMessage("Erro ao salvar exames.");
             }
         }
     };
@@ -438,7 +475,7 @@ export default function App() {
     }
 
     if (onboardingComplete === false) {
-        return <Onboarding userId={user.uid} onComplete={() => setOnboardingComplete(true)} />;
+        return <Onboarding userId={user.id} onComplete={() => setOnboardingComplete(true)} />;
     }
 
     const latestWearable = wearableData.length > 0 ? wearableData[wearableData.length - 1] : null;
@@ -851,14 +888,14 @@ export default function App() {
                         >
                             <div className="flex flex-col items-center space-y-4">
                                 <div className="w-24 h-24 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 border-4 border-white shadow-lg overflow-hidden">
-                                    {user?.photoURL ? (
-                                        <img src={user.photoURL} alt={user.displayName || ''} className="w-full h-full object-cover" />
+                                    {user?.user_metadata?.avatar_url ? (
+                                        <img src={user.user_metadata.avatar_url} alt={user.user_metadata.full_name || ''} className="w-full h-full object-cover" />
                                     ) : (
                                         <User size={48} />
                                     )}
                                 </div>
                                 <div className="text-center">
-                                    <h2 className="text-xl font-bold text-slate-800">{user?.displayName || 'Usuário'}</h2>
+                                    <h2 className="text-xl font-bold text-slate-800">{user?.user_metadata?.full_name || 'Usuário'}</h2>
                                     <p className="text-sm text-slate-500">{user?.email}</p>
                                 </div>
                             </div>
@@ -875,7 +912,7 @@ export default function App() {
                                     <ChevronRight size={18} className="text-slate-300" />
                                 </div>
                                 <div
-                                    onClick={() => logout()}
+                                    onClick={() => supabase.auth.signOut()}
                                     className="p-4 flex items-center gap-4 hover:bg-rose-50 cursor-pointer text-rose-600"
                                 >
                                     <div className="p-2 bg-rose-50 text-rose-500 rounded-lg"><X size={20} /></div>
