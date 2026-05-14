@@ -889,13 +889,13 @@ export default function App() {
                             <div className="flex flex-col items-center space-y-4">
                                 <div className="w-24 h-24 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 border-4 border-white shadow-lg overflow-hidden">
                                     {user?.user_metadata?.avatar_url ? (
-                                        <img src={user.user_metadata.avatar_url} alt={user.user_metadata.full_name || ''} className="w-full h-full object-cover" />
+                                        <img src={user.user_metadata.avatar_url} alt={user.user_metadata.full_name || 'Usuário'} className="w-full h-full object-cover" />
                                     ) : (
-                                        <User size={48} />
+                                        <span className="text-3xl font-bold uppercase">{user?.email?.[0] || <User size={48} />}</span>
                                     )}
                                 </div>
                                 <div className="text-center">
-                                    <h2 className="text-xl font-bold text-slate-800">{user?.user_metadata?.full_name || 'Usuário'}</h2>
+                                    <h2 className="text-xl font-bold text-slate-800">{user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Usuário'}</h2>
                                     <p className="text-sm text-slate-500">{user?.email}</p>
                                 </div>
                             </div>

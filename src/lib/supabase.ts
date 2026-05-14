@@ -13,20 +13,14 @@ export const supabase = createClient(
   supabasePublishableKey || 'placeholder'
 );
 
-export const loginWithGoogle = async () => {
-  // O redirectTo deve estar cadastrado nas "Redirect URLs" do seu projeto Supabase
-  // (Authentication > Settings > Allow List)
-  const { data, error } = await supabase.auth.signInWithOAuth({
-    provider: 'google',
+export const signInWithMagicLink = async (email: string) => {
+  const { data, error } = await supabase.auth.signInWithOtp({
+    email,
     options: {
-      redirectTo: `${window.location.origin}/`,
-      queryParams: {
-        access_type: 'offline',
-        prompt: 'consent',
-      },
+      emailRedirectTo: window.location.origin
     }
   });
-
+  
   if (error) {
     console.error("Login Error:", error);
     throw error;
