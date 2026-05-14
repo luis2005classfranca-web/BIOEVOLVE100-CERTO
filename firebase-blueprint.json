@@ -1,0 +1,72 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Main user details and metrics",
+      "type": "object",
+      "properties": {
+        "bio_score": { "type": "number", "description": "Calculated health score" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "UserExam": {
+      "title": "User Exam Record",
+      "description": "Extracted medical exam data",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string" },
+        "date": { "type": "string", "description": "Exam date" },
+        "analyte": { "type": "string", "description": "Measurement name" },
+        "value": { "type": "string", "description": "Measurement value" },
+        "unit": { "type": "string" },
+        "reference_range": { "type": "string" },
+        "imageUrl": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }
+      },
+      "required": ["user_id", "date", "analyte", "value"]
+    },
+    "WearableMetric": {
+      "title": "Wearable Data",
+      "description": "Activity metrics from devices",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "steps": { "type": "number" },
+        "heartRate": { "type": "number" },
+        "sleepHours": { "type": "number" }
+      },
+      "required": ["user_id", "timestamp"]
+    },
+    "HealthInsight": {
+      "title": "Health Insight",
+      "description": "AI generated health summary",
+      "type": "object",
+      "properties": {
+        "user_id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "text": { "type": "string" },
+        "actionable_tip": { "type": "string" }
+      },
+      "required": ["user_id", "timestamp", "text"]
+    }
+  },
+  "firestore": {
+    "users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Individual user profiles"
+    },
+    "users/{userId}/exams/{examId}": {
+      "schema": "UserExam",
+      "description": "Collection of medical exams for a user"
+    },
+    "users/{userId}/wearable_data/{dataId}": {
+      "schema": "WearableMetric",
+      "description": "Wearable activity data logs"
+    },
+    "users/{userId}/insights/{insightId}": {
+      "schema": "HealthInsight",
+      "description": "AI generated insights history"
+    }
+  }
+}

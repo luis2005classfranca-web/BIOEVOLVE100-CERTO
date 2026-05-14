@@ -20,7 +20,7 @@ export async function extractHealthDataFromImage(base64Image: string, mimeType: 
   }
 }
 
-export async function generateHealthInsight(exams: ExamRecord[], wearables: any[]): Promise<{ text: string, actionableTip: string }> {
+export async function generateHealthInsight(exams: ExamRecord[], wearables: any[]): Promise<{ text: string, actionableTip: string, bioScore: number }> {
   try {
     const response = await fetch("/api/gemini/insight", {
       method: "POST",

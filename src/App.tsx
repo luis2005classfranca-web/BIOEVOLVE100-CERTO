@@ -20,7 +20,8 @@ import {
     QrCode,
     X,
     ArrowLeft,
-    Trash2
+    Trash2,
+    Loader2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -38,7 +39,22 @@ import { QRCodeSVG } from 'qrcode.react';
 import { extractHealthDataFromImage, generateHealthInsight } from './services/geminiService';
 import { ExamRecord, WearableData, HealthInsight } from './types';
 import { useAuth } from './components/AuthProvider';
-import { supabase } from './lib/supabase';
+import { db, logout, handleFirestoreError, OperationType } from './lib/firebase';
+import { 
+    collection, 
+    query, 
+    where, 
+    orderBy, 
+    onSnapshot, 
+    addDoc, 
+    deleteDoc, 
+    doc, 
+    setDoc, 
+    getDoc,
+    limit,
+    serverTimestamp,
+    writeBatch
+} from 'firebase/firestore';
 import LoginScreen from './components/LoginScreen';
 
 export default function App() {
@@ -53,8 +69,31 @@ export default function App() {
     const [showConsultationMode, setShowConsultationMode] = useState(false);
     const [bioScore, setBioScore] = useState(0);
     const [insight, setInsight] = useState<HealthInsight | null>(null);
+    const [insightsHistory, setInsightsHistory] = useState<HealthInsight[]>([]);
     const [isGeneratingInsight, setIsGeneratingInsight] = useState(false);
+    const [isSaving, setIsSaving] = useState(false);
     const [isCameraActive, setIsCameraActive] = useState(false);
+    const [quotaExceeded, setQuotaExceeded] = useState(false);
+
+    const onFirestoreError = (error: any, op: OperationType, path: string | null) => {
+        try {
+            handleFirestoreError(error, op, path);
+        } catch (e: any) {
+            let isQuota = false;
+            try {
+                const parsed = JSON.parse(e.message);
+                if (parsed.isQuotaExceeded) isQuota = true;
+            } catch (err) {
+                if (e.message.includes('"isQuotaExceeded":true')) isQuota = true;
+            }
+
+            if (isQuota) {
+                setQuotaExceeded(true);
+                return; // Suppress re-throw for quota errors as we handle them via UI
+            }
+            throw e;
+        }
+    };
 
     const fileInputRef = useRef<HTMLInputElement>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
@@ -184,79 +223,45 @@ export default function App() {
         return () => window.removeEventListener('paste', handlePaste);
     }, [user, isAuthReady]);
 
-    // Listeners for Supabase data
+    // Listeners for Firestore data
     useEffect(() => {
         if (!user || !isAuthReady) return;
 
-        // Initial Feeds
-        const fetchExams = async () => {
-            const { data } = await supabase
-                .from('exams')
-                .select('*')
-                .eq('user_id', user.id)
-                .order('date', { ascending: false });
-            if (data) setExams(data as ExamRecord[]);
-        };
+        const examsPath = `users/${user.uid}/exams`;
+        const examsQuery = query(collection(db, examsPath), orderBy('date', 'desc'));
+        const unsubscribeExams = onSnapshot(examsQuery, (snapshot) => {
+            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any } as ExamRecord));
+            setExams(data);
+        }, (error) => onFirestoreError(error, OperationType.GET, examsPath));
 
-        const fetchWearable = async () => {
-            const { data } = await supabase
-                .from('wearable_data')
-                .select('*')
-                .eq('user_id', user.id)
-                .order('timestamp', { ascending: true });
-            if (data) setWearableData(data as WearableData[]);
-        };
+        const wearablePath = `users/${user.uid}/wearable_data`;
+        const wearableQuery = query(collection(db, wearablePath), orderBy('timestamp', 'asc'));
+        const unsubscribeWearable = onSnapshot(wearableQuery, (snapshot) => {
+            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any } as WearableData));
+            setWearableData(data);
+        }, (error) => onFirestoreError(error, OperationType.GET, wearablePath));
 
-        const fetchProfile = async () => {
-            const { data } = await supabase
-                .from('profiles')
-                .select('bio_score')
-                .eq('id', user.id)
-                .single();
-            if (data) setBioScore(data.bio_score || 0);
-        };
+        const profilePath = `users/${user.uid}`;
+        const unsubscribeProfile = onSnapshot(doc(db, profilePath), (snapshot) => {
+            if (snapshot.exists()) {
+                const data = snapshot.data();
+                setBioScore(data.bio_score || data.bioScore || 0);
+            }
+        }, (error) => onFirestoreError(error, OperationType.GET, profilePath));
 
-        const fetchInsights = async () => {
-            const { data } = await supabase
-                .from('insights')
-                .select('*')
-                .eq('user_id', user.id)
-                .order('timestamp', { ascending: false })
-                .limit(1);
-            if (data && data.length > 0) setInsight(data[0] as HealthInsight);
-        };
-
-        fetchExams();
-        fetchWearable();
-        fetchProfile();
-        fetchInsights();
-
-        // Real-time Subscriptions
-        const examsSub = supabase
-            .channel('exams-changes')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'exams', filter: `user_id=eq.${user.id}` }, fetchExams)
-            .subscribe();
-
-        const wearableSub = supabase
-            .channel('wearable-changes')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'wearable_data', filter: `user_id=eq.${user.id}` }, fetchWearable)
-            .subscribe();
-
-        const profileSub = supabase
-            .channel('profile-changes')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles', filter: `id=eq.${user.id}` }, fetchProfile)
-            .subscribe();
-
-        const insightsSub = supabase
-            .channel('insights-changes')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'insights', filter: `user_id=eq.${user.id}` }, fetchInsights)
-            .subscribe();
+        const insightsPath = `users/${user.uid}/insights`;
+        const insightsQuery = query(collection(db, insightsPath), orderBy('timestamp', 'desc'));
+        const unsubscribeInsights = onSnapshot(insightsQuery, (snapshot) => {
+            const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() as any } as HealthInsight));
+            if (data.length > 0) setInsight(data[0]);
+            setInsightsHistory(data);
+        }, (error) => onFirestoreError(error, OperationType.GET, insightsPath));
 
         return () => {
-            supabase.removeChannel(examsSub);
-            supabase.removeChannel(wearableSub);
-            supabase.removeChannel(profileSub);
-            supabase.removeChannel(insightsSub);
+            unsubscribeExams();
+            unsubscribeWearable();
+            unsubscribeProfile();
+            unsubscribeInsights();
         };
     }, [user, isAuthReady]);
 
@@ -265,18 +270,32 @@ export default function App() {
         setIsGeneratingInsight(true);
         setErrorMessage(null);
         try {
-            const data = await generateHealthInsight(exams.slice(0, 5), wearableData.slice(-7));
+            // Send more history for long-term analysis (last 20 exams)
+            const data = await generateHealthInsight(exams.slice(0, 20), wearableData.slice(-7));
+            const path = `users/${user.uid}/insights`;
 
-            const { error } = await supabase
-                .from('insights')
-                .insert({
-                    user_id: user.id,
-                    timestamp: new Date().toISOString(),
-                    text: data.text,
-                    actionable_tip: data.actionableTip
-                });
+            // Save insight
+            const insightData = {
+                user_id: user.uid,
+                timestamp: new Date().toISOString(),
+                text: data.text,
+                actionable_tip: data.actionableTip,
+                bioScore: data.bioScore || 0
+            };
+            
+            try {
+                await addDoc(collection(db, path), insightData);
 
-            if (error) throw error;
+                // Update user profile with bioScore
+                if (data.bioScore) {
+                    await setDoc(doc(db, `users/${user.uid}`), {
+                        bioScore: data.bioScore,
+                        updatedAt: new Date().toISOString()
+                    }, { merge: true });
+                }
+            } catch (err) {
+                onFirestoreError(err, OperationType.WRITE, path);
+            }
         } catch (error) {
             console.error(error);
             setErrorMessage("Não foi possível gerar seu insight no momento.");
@@ -363,32 +382,21 @@ export default function App() {
         if (!user || !window.confirm("Tem certeza que deseja apagar este exame?")) return;
         
         try {
-            const { error } = await supabase
-                .from('exams')
-                .delete()
-                .eq('id', examId)
-                .eq('user_id', user.id);
-            
-            if (error) throw error;
+            const path = `users/${user.uid}/exams/${examId}`;
+            await deleteDoc(doc(db, path));
             setErrorMessage(null);
         } catch (error) {
-            console.error("Delete error:", error);
+            onFirestoreError(error, OperationType.DELETE, `users/${user.uid}/exams/${examId}`);
             setErrorMessage("Erro ao apagar exame.");
         }
     };
 
     const confirmScan = async () => {
-        if (scanResult && user) {
+        if (scanResult && user && !isSaving) {
+            setIsSaving(true);
+            setErrorMessage(null);
             try {
                 // Deduplication check
-                const duplicates = scanResult.filter(newRecord => 
-                    exams.some(existing => 
-                        existing.date === newRecord.date && 
-                        existing.analyte === newRecord.analyte && 
-                        existing.value === newRecord.value
-                    )
-                );
-
                 const newRecords = scanResult.filter(newRecord => 
                     !exams.some(existing => 
                         existing.date === newRecord.date && 
@@ -397,37 +405,53 @@ export default function App() {
                     )
                 );
 
+                const duplicates = scanResult.filter(newRecord => 
+                    exams.some(existing => 
+                        existing.date === newRecord.date && 
+                        existing.analyte === newRecord.analyte && 
+                        existing.value === newRecord.value
+                    )
+                );
+
                 if (newRecords.length === 0 && duplicates.length > 0) {
                     setErrorMessage("Todos os exames detectados já estão cadastrados.");
+                    setIsSaving(false);
                     return;
                 }
 
-                const { error } = await supabase
-                    .from('exams')
-                    .insert(newRecords.map(record => ({
-                        user_id: user.id,
-                        date: record.date,
-                        analyte: record.analyte,
-                        value: record.value,
-                        unit: record.unit,
-                        reference_range: record.referenceRange,
-                        imageUrl: record.imageUrl,
-                        created_at: new Date().toISOString()
-                    })));
+                if (newRecords.length > 0) {
+                    const batch = writeBatch(db);
+                    const path = `users/${user.uid}/exams`;
+                    
+                    newRecords.forEach(record => {
+                        const newDocRef = doc(collection(db, path));
+                        batch.set(newDocRef, {
+                            user_id: user.uid,
+                            date: record.date || new Date().toISOString().split('T')[0],
+                            analyte: record.analyte || 'Indefinido',
+                            value: String(record.value || '0'),
+                            unit: record.unit || '',
+                            reference_range: record.referenceRange || '',
+                            imageUrl: record.imageUrl || '',
+                            created_at: new Date().toISOString()
+                        });
+                    });
 
-                if (error) throw error;
+                    await batch.commit();
+                }
 
                 if (duplicates.length > 0) {
                     alert(`${duplicates.length} exame(s) foram ignorados por já estarem cadastrados.`);
                 }
 
                 setScanResult(null);
-                setErrorMessage(null);
                 setIsScanning(false);
                 setActiveTab('timeline');
             } catch (error) {
-                console.error("Save error:", error);
-                setErrorMessage("Erro ao salvar exames.");
+                onFirestoreError(error, OperationType.WRITE, `users/${user.uid}/exams`);
+                setErrorMessage("Erro ao salvar exames. Verifique sua conexão.");
+            } finally {
+                setIsSaving(false);
             }
         }
     };
@@ -447,8 +471,45 @@ export default function App() {
         return <LoginScreen />;
     }
 
+    if (quotaExceeded) {
+        return (
+            <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 text-center">
+                <div className="max-w-md space-y-6">
+                    <div className="w-20 h-20 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mx-auto mb-6">
+                        <AlertCircle size={40} />
+                    </div>
+                    <h1 className="text-2xl font-bold text-slate-800">Limite de Uso Atingido</h1>
+                    <p className="text-slate-600">
+                        O aplicativo atingiu o limite diário de processamento do banco de dados (Firestore) na conta gratuita do Firebase. 
+                    </p>
+                    <p className="text-slate-600 text-sm italic">
+                        O limite será redefinido automaticamente amanhã. Por favor, tente novamente mais tarde ou entre em contato com o suporte.
+                    </p>
+                    <button 
+                        onClick={() => window.location.reload()}
+                        className="w-full py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg shadow-indigo-200 hover:bg-indigo-700 transition-all"
+                    >
+                        Tentar Novamente
+                    </button>
+                    <p className="text-[10px] text-slate-400 font-mono uppercase tracking-widest pt-8">
+                        Firebase Free Tier Quota Exceeded
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
     const latestWearable = wearableData.length > 0 ? wearableData[wearableData.length - 1] : null;
-    const calculatedBioScore = exams.length === 0 && wearableData.length === 0 ? 0 : Math.min(100, 50 + exams.length * 5 + wearableData.length * 2);
+    
+    // BioScore Logic:
+    // 1. Priority: State bioScore (from AI insight in Firestore)
+    // 2. Fallback: Local calculation if state is 0 and no insights exist
+    const localCalcBioScore = exams.length === 0 && wearableData.length === 0 ? 0 : Math.min(100, 50 + exams.length * 5 + wearableData.length * 2);
+    const currentBioScore = (bioScore > 0 || insightsHistory.length > 0) ? bioScore : localCalcBioScore;
+
+    // Group exams by analyte for smarter selection in charts
+    const analytes = Array.from(new Set(exams.map(e => e.analyte)));
+    const selectedAnalyte = analytes.includes('Glicose') ? 'Glicose' : (analytes[0] || '');
 
     return (
         <div className="min-h-screen bg-[#F8FAFC] text-slate-900 font-sans pb-24">
@@ -489,16 +550,16 @@ export default function App() {
                                     <div className="flex justify-between items-start">
                                         <div>
                                             <p className="text-indigo-100 text-sm font-medium">Seu BioScore</p>
-                                            <h2 className="text-5xl font-bold mt-1">{calculatedBioScore}</h2>
+                                            <h2 className="text-5xl font-bold mt-1">{currentBioScore}</h2>
                                         </div>
                                         <div className="bg-white/20 backdrop-blur-md p-2 rounded-xl">
                                             <TrendingUp size={24} />
                                         </div>
                                     </div>
                                     <p className="mt-4 text-sm text-indigo-100 leading-relaxed">
-                                        {calculatedBioScore > 0
-                                            ? "Seu BioScore está sendo calculado com base nos seus últimos exames e atividades."
-                                            : "Adicione seus dados para calcular seu primeiro BioScore."
+                                        {currentBioScore > 0
+                                            ? "Este score reflete sua análise de evolução baseada em documentos e wearables recentes."
+                                            : "Adicione seus dados para a IA calcular seu primeiro BioScore histórico."
                                         }
                                     </p>
                                 </div>
@@ -534,9 +595,16 @@ export default function App() {
                             {/* AI Insight Card */}
                             <div className="bg-white p-6 rounded-3xl border border-slate-100 shadow-sm relative overflow-hidden">
                                 <div className="absolute top-0 right-0 w-32 h-32 bg-indigo-50 rounded-full blur-3xl -mr-10 -mt-10" />
-                                <div className="flex items-center gap-2 text-indigo-600 mb-4 relative z-10">
-                                    <Zap size={20} className="fill-indigo-100" />
-                                    <h3 className="text-sm font-bold">Insight da IA</h3>
+                                <div className="flex items-center justify-between mb-4 relative z-10">
+                                    <div className="flex items-center gap-2 text-indigo-600">
+                                        <Zap size={20} className="fill-indigo-100" />
+                                        <h3 className="text-sm font-bold">Insight da IA</h3>
+                                    </div>
+                                    {insight && (
+                                        <div className="px-2 py-1 bg-indigo-100 text-indigo-700 text-[10px] font-bold rounded-lg uppercase">
+                                            Score: {insight.bioScore || 0}
+                                        </div>
+                                    )}
                                 </div>
 
                                 {insight ? (
@@ -567,6 +635,35 @@ export default function App() {
                                     </div>
                                 )}
                             </div>
+
+                            {/* Analysis History */}
+                            {insightsHistory.length > 1 && (
+                                <div className="space-y-4">
+                                    <div className="flex items-center justify-between">
+                                        <h3 className="text-sm font-bold text-slate-800">Análises Anteriores</h3>
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{insightsHistory.length - 1} análises</span>
+                                    </div>
+                                    <div className="space-y-3">
+                                        {insightsHistory.slice(1, 4).map((h, i) => (
+                                            <div key={h.id || i} className="p-4 bg-white rounded-2xl border border-slate-100 shadow-sm flex items-center justify-between group">
+                                                <div className="flex items-center gap-3">
+                                                    <div className="w-10 h-10 bg-slate-50 rounded-lg flex items-center justify-center text-slate-400 group-hover:bg-indigo-50 group-hover:text-indigo-500 transition-colors">
+                                                        <History size={18} />
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-xs font-bold text-slate-700 truncate max-w-[150px]">{h.text}</p>
+                                                        <p className="text-[10px] text-slate-400">{new Date(h.timestamp).toLocaleDateString()} • {new Date(h.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
+                                                    </div>
+                                                </div>
+                                                <div className="flex flex-col items-end gap-1">
+                                                    <span className="text-xs font-bold text-indigo-600">Score: {h.bioScore || 0}</span>
+                                                    <ChevronRight size={14} className="text-slate-300" />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Daily Check-up Prompt */}
                             <div className="bg-indigo-50 border border-indigo-100 rounded-2xl p-4 flex items-center gap-4">
@@ -623,10 +720,13 @@ export default function App() {
                             className="space-y-6"
                         >
                             <div className="flex justify-between items-center">
-                                <h2 className="text-xl font-bold text-slate-800">Linha do Tempo</h2>
+                                <h2 className="text-xl font-bold text-slate-800">Evolução Histórica</h2>
                                 <div className="flex gap-2">
-                                    <button className="px-3 py-1 bg-white border border-slate-200 rounded-full text-xs font-medium">Glicose</button>
-                                    <button className="px-3 py-1 bg-slate-100 text-slate-500 rounded-full text-xs font-medium">Colesterol</button>
+                                    {analytes.slice(0, 2).map(a => (
+                                        <button key={a} className={`px-3 py-1 rounded-full text-xs font-medium ${selectedAnalyte === a ? 'bg-indigo-600 text-white' : 'bg-white border border-slate-200'}`}>
+                                            {a}
+                                        </button>
+                                    ))}
                                 </div>
                             </div>
 
@@ -635,19 +735,19 @@ export default function App() {
                                     <>
                                         <div className="h-64 w-full">
                                             <ResponsiveContainer width="100%" height="100%">
-                                                <LineChart data={exams.filter(e => e.analyte === 'Glicose')}>
+                                                <LineChart data={exams.filter(e => e.analyte === selectedAnalyte).sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime())}>
                                                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
-                                                    <XAxis dataKey="date" tick={{ fontSize: 10 }} />
+                                                    <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(val) => new Date(val).toLocaleDateString('pt-BR', {month: 'short', day: 'numeric'})} />
                                                     <YAxis tick={{ fontSize: 10 }} />
-                                                    <Tooltip />
+                                                    <Tooltip labelFormatter={(val) => new Date(val).toLocaleDateString('pt-BR')} />
                                                     <Line type="monotone" dataKey="value" stroke="#6366f1" strokeWidth={3} dot={{ r: 6, fill: '#6366f1' }} />
                                                 </LineChart>
                                             </ResponsiveContainer>
                                         </div>
                                         <div className="mt-4 p-3 bg-slate-50 rounded-xl flex items-center gap-3">
-                                            <AlertCircle className="text-amber-500" size={18} />
+                                            <AlertCircle className="text-indigo-500" size={18} />
                                             <p className="text-xs text-slate-600">
-                                                Seus dados estão sendo analisados pela IA para gerar insights personalizados.
+                                                Exibindo tendência para <span className="font-bold">{selectedAnalyte}</span>. Use o dashboard para ver insights comparativos de IA.
                                             </p>
                                         </div>
                                     </>
@@ -814,17 +914,6 @@ export default function App() {
                                                 </div>
                                                 <div className="flex justify-between items-end">
                                                     <p className="text-xl font-bold text-slate-900">{res.value} <span className="text-sm font-normal text-slate-400">{res.unit}</span></p>
-                                                    {res.confidence !== undefined && (
-                                                        <div className="flex items-center gap-1">
-                                                            <div className="w-12 h-1 bg-slate-200 rounded-full overflow-hidden">
-                                                                <div
-                                                                    className={`h-full ${res.confidence > 80 ? 'bg-emerald-500' : res.confidence > 50 ? 'bg-amber-500' : 'bg-rose-500'}`}
-                                                                    style={{ width: `${res.confidence}%` }}
-                                                                />
-                                                            </div>
-                                                            <span className="text-[9px] font-bold text-slate-400">{res.confidence}%</span>
-                                                        </div>
-                                                    )}
                                                 </div>
                                             </div>
                                         ))}
@@ -838,9 +927,15 @@ export default function App() {
                                         </button>
                                         <button
                                             onClick={confirmScan}
-                                            className="flex-1 py-3 bg-indigo-600 text-white rounded-xl font-bold"
+                                            disabled={isSaving}
+                                            className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-bold hover:bg-indigo-700 transition-all disabled:opacity-50 flex items-center justify-center gap-2"
                                         >
-                                            Confirmar
+                                            {isSaving ? (
+                                                <>
+                                                    <Loader2 className="animate-spin" size={20} />
+                                                    Salvando...
+                                                </>
+                                            ) : 'Confirmar'}
                                         </button>
                                     </div>
                                 </motion.div>
@@ -857,15 +952,15 @@ export default function App() {
                         >
                             <div className="flex flex-col items-center space-y-4">
                                 <div className="w-24 h-24 bg-indigo-100 rounded-full flex items-center justify-center text-indigo-600 border-4 border-white shadow-lg overflow-hidden">
-                                    {user?.user_metadata?.avatar_url ? (
-                                        <img src={user.user_metadata.avatar_url} alt={user.user_metadata.full_name || 'Usuário'} className="w-full h-full object-cover" />
+                                    {user?.photoURL ? (
+                                        <img src={user.photoURL} alt={user.displayName || 'Usuário'} className="w-full h-full object-cover" />
                                     ) : (
-                                        <span className="text-3xl font-bold uppercase">{user?.email?.[0] || <User size={48} />}</span>
+                                        <span className="text-3xl font-bold uppercase">{user?.email?.[0] || user?.uid?.[0] || <User size={48} />}</span>
                                     )}
                                 </div>
                                 <div className="text-center">
-                                    <h2 className="text-xl font-bold text-slate-800">{user?.user_metadata?.full_name || user?.email?.split('@')[0] || 'Usuário'}</h2>
-                                    <p className="text-sm text-slate-500">{user?.email}</p>
+                                    <h2 className="text-xl font-bold text-slate-800">{user?.displayName || (user?.email ? user.email.split('@')[0] : 'Usuário Anônimo')}</h2>
+                                    {user?.email && <p className="text-sm text-slate-500">{user.email}</p>}
                                 </div>
                             </div>
 
@@ -881,7 +976,7 @@ export default function App() {
                                     <ChevronRight size={18} className="text-slate-300" />
                                 </div>
                                 <div
-                                    onClick={() => supabase.auth.signOut()}
+                                    onClick={() => logout()}
                                     className="p-4 flex items-center gap-4 hover:bg-rose-50 cursor-pointer text-rose-600"
                                 >
                                     <div className="p-2 bg-rose-50 text-rose-500 rounded-lg"><X size={20} /></div>

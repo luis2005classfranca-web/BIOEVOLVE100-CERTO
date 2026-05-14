@@ -35,6 +35,7 @@ export interface HealthInsight {
   timestamp: string;
   text: string;
   actionableTip: string;
+  bioScore?: number;
 }
 
 export interface UserProfile {

@@ -36,7 +36,7 @@ async function startServer() {
       Retorne em formato JSON JSON: [{ analyte, value, unit, referenceRange, date, confidence }]`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.0-flash",
         contents: [
           { text: prompt },
           { 
@@ -70,13 +70,24 @@ async function startServer() {
     try {
       const { exams, wearables } = req.body;
 
-      const prompt = `Analise os seguintes dados de saúde e gere um insight curto e uma dica prática:
-      Exames: ${JSON.stringify(exams)}
-      Atividade: ${JSON.stringify(wearables)}
-      Responda estritamente em formato JSON: { "text": "analise aqui", "actionableTip": "dica aqui" }`;
+      const prompt = `Analise este histórico de saúde do usuário para identificar tendências de longo prazo e gerar insights comparativos.
+      DADOS DE EXAMES (Histórico): ${JSON.stringify(exams)}
+      ATIVIDADE (Última semana): ${JSON.stringify(wearables)}
+      
+      Instruções:
+      1. Se houver mais de um exame do mesmo tipo em datas diferentes, compare-os (ex: "Sua taxa X melhorou Y% desde a última medição").
+      2. Gere um BioScore (0-100) que reflita o estado atual comparado ao histórico.
+      3. Seja específico e técnico, mas motivador.
+      
+      Responda estritamente em formato JSON: 
+      { 
+        "text": "Análise detalhada aqui incluindo comparações históricas se existirem", 
+        "actionableTip": "Uma dica prática baseada na sua maior necessidade atual", 
+        "bioScore": 85 
+      }`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
+        model: "gemini-2.0-flash",
         contents: prompt,
         config: {
           responseMimeType: "application/json"

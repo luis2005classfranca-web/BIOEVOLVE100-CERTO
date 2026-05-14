@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { User, Loader2 } from 'lucide-react';
-import { loginAnonymously } from '../lib/supabase';
+import { loginAnonymously } from '../lib/firebase';
 import { motion } from 'motion/react';
 
 export default function LoginScreen() {
@@ -14,7 +14,7 @@ export default function LoginScreen() {
       await loginAnonymously();
     } catch (err: any) {
       if (err.message?.includes('Anonymous sign-ins are disabled')) {
-        setError("O login anônimo está desativado no Supabase. Ative-o em: Authentication > Providers > Anonymous.");
+        setError("O login anônimo está desativado no Firebase. Ative-o no console.");
       } else {
         setError(err.message || "Erro ao acessar o app. Tente novamente.");
       }
