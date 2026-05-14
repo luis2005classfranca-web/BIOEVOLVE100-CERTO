@@ -36,24 +36,32 @@ async function startServer() {
       Retorne em formato JSON JSON: [{ analyte, value, unit, referenceRange, date, confidence }]`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-1.5-flash",
+        model: "gemini-3-flash-preview",
         contents: [
-          {
-            parts: [
-              { text: prompt },
-              { inlineData: { data: image.split(",")[1] || image, mimeType } }
-            ]
+          { text: prompt },
+          { 
+            inlineData: { 
+              data: image.split(",")[1] || image, 
+              mimeType: mimeType || "image/jpeg" 
+            } 
           }
         ],
         config: {
-          responseMimeType: "application/json",
+          responseMimeType: "application/json"
         }
       });
       
-      res.json(JSON.parse(response.text || "[]"));
+      let text = response.text || "[]";
+      
+      // Clean up markdown if present
+      if (text.includes("```")) {
+        text = text.replace(/```json\n?|```/g, "").trim();
+      }
+      
+      res.json(JSON.parse(text));
     } catch (error) {
       console.error("Extraction Proxy Error:", error);
-      res.status(500).json({ error: "Falha na análise do documento via servidor." });
+      res.status(500).json({ error: "Falha na análise do documento via servidor. Verifique se o documento é legível." });
     }
   });
 
@@ -68,14 +76,21 @@ async function startServer() {
       Responda estritamente em formato JSON: { "text": "analise aqui", "actionableTip": "dica aqui" }`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-1.5-flash",
+        model: "gemini-3-flash-preview",
         contents: prompt,
         config: {
-          responseMimeType: "application/json",
+          responseMimeType: "application/json"
         }
       });
+
+      let text = response.text || "{}";
+
+      // Clean up markdown if present
+      if (text.includes("```")) {
+        text = text.replace(/```json\n?|```/g, "").trim();
+      }
       
-      res.json(JSON.parse(response.text || "{}"));
+      res.json(JSON.parse(text));
     } catch (error) {
       console.error("AI Insight Proxy Error:", error);
       res.status(500).json({ error: "Falha ao gerar insight via servidor." });

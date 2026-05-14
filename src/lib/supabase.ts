@@ -13,14 +13,8 @@ export const supabase = createClient(
   supabasePublishableKey || 'placeholder'
 );
 
-export const signInWithMagicLink = async (email: string) => {
-  const { data, error } = await supabase.auth.signInWithOtp({
-    email,
-    options: {
-      emailRedirectTo: window.location.origin
-    }
-  });
-  
+export const loginAnonymously = async () => {
+  const { data, error } = await supabase.auth.signInAnonymously();
   if (error) {
     console.error("Login Error:", error);
     throw error;

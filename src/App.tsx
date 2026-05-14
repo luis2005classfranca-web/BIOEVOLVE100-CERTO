@@ -40,7 +40,6 @@ import { ExamRecord, WearableData, HealthInsight } from './types';
 import { useAuth } from './components/AuthProvider';
 import { supabase } from './lib/supabase';
 import LoginScreen from './components/LoginScreen';
-import Onboarding from './components/Onboarding';
 
 export default function App() {
     const { user, loading, isAuthReady } = useAuth();
@@ -53,7 +52,6 @@ export default function App() {
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
     const [showConsultationMode, setShowConsultationMode] = useState(false);
     const [bioScore, setBioScore] = useState(0);
-    const [onboardingComplete, setOnboardingComplete] = useState<boolean | null>(null);
     const [insight, setInsight] = useState<HealthInsight | null>(null);
     const [isGeneratingInsight, setIsGeneratingInsight] = useState(false);
     const [isCameraActive, setIsCameraActive] = useState(false);
@@ -186,34 +184,9 @@ export default function App() {
         return () => window.removeEventListener('paste', handlePaste);
     }, [user, isAuthReady]);
 
-    // Check onboarding status
-    useEffect(() => {
-        if (!user || !isAuthReady) return;
-
-        const checkOnboarding = async () => {
-            try {
-                const { data, error } = await supabase
-                    .from('profiles')
-                    .select('onboarding_complete')
-                    .eq('id', user.id)
-                    .single();
-                
-                if (data?.onboarding_complete) {
-                    setOnboardingComplete(true);
-                } else {
-                    setOnboardingComplete(false);
-                }
-            } catch (error) {
-                console.error("Error checking onboarding", error);
-                setOnboardingComplete(false);
-            }
-        };
-        checkOnboarding();
-    }, [user, isAuthReady]);
-
     // Listeners for Supabase data
     useEffect(() => {
-        if (!user || !isAuthReady || onboardingComplete !== true) return;
+        if (!user || !isAuthReady) return;
 
         // Initial Feeds
         const fetchExams = async () => {
@@ -285,7 +258,7 @@ export default function App() {
             supabase.removeChannel(profileSub);
             supabase.removeChannel(insightsSub);
         };
-    }, [user, isAuthReady, onboardingComplete]);
+    }, [user, isAuthReady]);
 
     const generateInsight = async () => {
         if (!user) return;
@@ -472,10 +445,6 @@ export default function App() {
 
     if (!user) {
         return <LoginScreen />;
-    }
-
-    if (onboardingComplete === false) {
-        return <Onboarding userId={user.id} onComplete={() => setOnboardingComplete(true)} />;
     }
 
     const latestWearable = wearableData.length > 0 ? wearableData[wearableData.length - 1] : null;
