@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously as firebaseSignInAnonymously, signOut as firebaseSignOut } from 'firebase/auth';
+import { getAuth, signInAnonymously as firebaseSignInAnonymously, signOut as firebaseSignOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
 import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -66,6 +66,18 @@ export const loginAnonymously = async () => {
     return result.user;
   } catch (error) {
     console.error("Firebase Login Error:", error);
+    throw error;
+  }
+};
+
+export const loginWithGoogle = async () => {
+  try {
+    const provider = new GoogleAuthProvider();
+    // Prefer popup as it works better in the iFrame environment
+    const result = await signInWithPopup(auth, provider);
+    return result.user;
+  } catch (error) {
+    console.error("Google Login Error:", error);
     throw error;
   }
 };
