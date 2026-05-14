@@ -19,7 +19,8 @@ import {
     CheckCircle2,
     QrCode,
     X,
-    ArrowLeft
+    ArrowLeft,
+    Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
@@ -38,7 +39,7 @@ import { extractHealthDataFromImage, generateHealthInsight } from './services/ge
 import { ExamRecord, WearableData, HealthInsight } from './types';
 import { useAuth } from './components/FirebaseProvider';
 import { auth, loginWithGoogle, logout, db, handleFirestoreError, OperationType } from './lib/firebase';
-import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, getDoc } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, getDoc, deleteDoc } from 'firebase/firestore';
 import LoginScreen from './components/LoginScreen';
 import Onboarding from './components/Onboarding';
 
@@ -361,16 +362,56 @@ export default function App() {
         reader.readAsDataURL(file);
     };
 
+    const deleteExam = async (examId: string) => {
+        if (!user || !window.confirm("Tem certeza que deseja apagar este exame?")) return;
+        
+        const examDocPath = `users/${user.uid}/exams/${examId}`;
+        try {
+            await deleteDoc(doc(db, examDocPath));
+            setErrorMessage(null);
+        } catch (error) {
+            handleFirestoreError(error, OperationType.DELETE, examDocPath);
+        }
+    };
+
     const confirmScan = async () => {
         if (scanResult && user) {
             const examsPath = `users/${user.uid}/exams`;
             try {
-                await Promise.all(scanResult.map(record =>
+                // Deduplication check: Filter out results that already exist in our local exams state
+                // We check for exact matches in date, analyte, and value
+                const duplicates = scanResult.filter(newRecord => 
+                    exams.some(existing => 
+                        existing.date === newRecord.date && 
+                        existing.analyte === newRecord.analyte && 
+                        existing.value === newRecord.value
+                    )
+                );
+
+                const newRecords = scanResult.filter(newRecord => 
+                    !exams.some(existing => 
+                        existing.date === newRecord.date && 
+                        existing.analyte === newRecord.analyte && 
+                        existing.value === newRecord.value
+                    )
+                );
+
+                if (newRecords.length === 0 && duplicates.length > 0) {
+                    setErrorMessage("Todos os exames detectados já estão cadastrados.");
+                    return;
+                }
+
+                await Promise.all(newRecords.map(record =>
                     addDoc(collection(db, examsPath), {
                         ...record,
                         createdAt: serverTimestamp()
                     })
                 ));
+
+                if (duplicates.length > 0) {
+                    alert(`${duplicates.length} exame(s) foram ignorados por já estarem cadastrados.`);
+                }
+
                 setScanResult(null);
                 setErrorMessage(null);
                 setIsScanning(false);
@@ -627,14 +668,23 @@ export default function App() {
                                 <div className="space-y-3">
                                     <h3 className="text-sm font-bold text-slate-800 px-1">Exames Recentes</h3>
                                     {exams.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(exam => (
-                                        <div key={exam.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex justify-between items-center">
+                                        <div key={exam.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex justify-between items-center group relative">
                                             <div>
                                                 <p className="text-xs text-slate-400 font-medium">{new Date(exam.date).toLocaleDateString('pt-BR')}</p>
                                                 <p className="font-bold text-slate-800">{exam.analyte}</p>
                                             </div>
-                                            <div className="text-right">
-                                                <p className="text-lg font-bold text-indigo-600">{exam.value} <span className="text-xs font-normal text-slate-400">{exam.unit}</span></p>
-                                                <p className="text-[10px] text-slate-400">Ref: {exam.referenceRange}</p>
+                                            <div className="flex items-center gap-4">
+                                                <div className="text-right">
+                                                    <p className="text-lg font-bold text-indigo-600">{exam.value} <span className="text-xs font-normal text-slate-400">{exam.unit}</span></p>
+                                                    <p className="text-[10px] text-slate-400">Ref: {exam.referenceRange}</p>
+                                                </div>
+                                                <button 
+                                                    onClick={() => deleteExam(exam.id)}
+                                                    className="p-2 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
+                                                    title="Apagar exame"
+                                                >
+                                                    <Trash2 size={16} />
+                                                </button>
                                             </div>
                                         </div>
                                     ))}
