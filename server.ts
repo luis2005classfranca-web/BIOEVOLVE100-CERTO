@@ -1,67 +1,133 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
   // Initialize Gemini AI
-  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || "" });
+  const apiKey = process.env.GEMINI_KEY || process.env.GEMINI_API_KEY;
+  
+  const ai = new GoogleGenAI({ 
+    apiKey: apiKey || "MISSING_KEY",
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
+
+  const isGeminiQuotaError = (error: any) => {
+    return error?.status === 429 || 
+           error?.code === 429 || 
+           (error?.message && (
+             error.message.includes("Quota exceeded") || 
+             error.message.includes("RESOURCE_EXHAUSTED") ||
+             error.message.includes("429")
+           ));
+  };
 
   // AI Extraction Proxy Route
   app.post("/api/gemini/extract", async (req, res) => {
     try {
       const { image, mimeType } = req.body;
       
-      const prompt = `Extraia todos os resultados de saúde deste documento ou print de tela. 
-      Pode ser um exame de sangue laboratorial ou um relatório de bioimpedância (como Tanita ou InBody).
+      if (!image) {
+        return res.status(400).json({ error: "Imagem não fornecida." });
+      }
 
-      Para bioimpedância, extraia campos como:
-      - Peso (Weight)
-      - % de Gordura (Fat %)
-      - Massa Muscular (Muscle Mass)
-      - IMC (BMI)
-      - Idade Metabólica (Metabolic Age)
-      - Gordura Visceral (Visceral Fat Rating)
-      - Massa de Gordura (Fat Mass)
-      
-      Para exames de sangue, extraia os analitos (Glicose, Colesterol, etc.), valores e unidades.
-      
-      Data do exame: Procure por datas no documento. Se não encontrar, retorne nulo.
-      Seja extremamente preciso com os números.
-      Retorne em formato JSON JSON: [{ analyte, value, unit, referenceRange, date, confidence }]`;
+      const prompt = `Analise a imagem e extraia dados de saúde. 
+      Categorize em um destes grupos: Composição Corporal, Metabolismo e Glicemia, Perfil Lipídico, Marcadores Inflamatórios, Hormônios, Hemograma, Outros.
+      Identifique a data do exame e os valores exatos.
+      JSON: [{ analyte, value, unit, referenceRange, category, date }]`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
-        contents: [
-          { text: prompt },
-          { 
-            inlineData: { 
-              data: image.split(",")[1] || image, 
-              mimeType: mimeType || "image/jpeg" 
-            } 
-          }
-        ],
+        model: "gemini-flash-latest",
+        contents: {
+          parts: [
+            { text: prompt },
+            { 
+              inlineData: { 
+                data: image.split(",")[1] || image, 
+                mimeType: mimeType || "image/jpeg" 
+              } 
+            }
+          ]
+        },
         config: {
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                analyte: { type: Type.STRING, description: "Name of the test or marker" },
+                value: { type: Type.STRING, description: "Numeric value as string" },
+                unit: { type: Type.STRING, description: "Measurement unit" },
+                referenceRange: { type: Type.STRING, description: "Reference range text" },
+                category: { type: Type.STRING, description: "Health category" },
+                date: { type: Type.STRING, description: "Exam date if found" }
+              }
+            }
+          }
         }
       });
       
-      let text = response.text || "[]";
+      const text = response.text || "[]";
       
-      // Clean up markdown if present
-      if (text.includes("```")) {
-        text = text.replace(/```json\n?|```/g, "").trim();
+      try {
+        res.json(JSON.parse(text));
+      } catch (parseError) {
+        console.error("JSON Parse Error:", parseError, "Raw Text:", text);
+        res.status(500).json({ error: "Erro ao processar dados extraídos." });
       }
-      
+    } catch (error: any) {
+      console.error("Extraction Proxy Error Details:", error);
+      if (isGeminiQuotaError(error)) {
+        return res.status(429).json({ error: "Limite da IA atingido. Tente em instantes.", isQuotaError: true });
+      }
+      res.status(500).json({ error: "Falha na análise do documento. Detalhes: " + (error?.message || "Erro desconhecido") });
+    }
+  });
+
+  // AI Explanation Proxy Route
+  app.post("/api/gemini/explain", async (req, res) => {
+    try {
+      const { exams } = req.body;
+
+      const prompt = `Explique estes resultados para o paciente (detalhado, claro, acolhedor).
+      Use termos simples. Se houver valores fora da faixa, explique possibilidades e sugira médico.
+      DADOS: ${JSON.stringify(exams)}
+      JSON: { "explanation": "Markdown text" }`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-flash-latest",
+        contents: prompt,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              explanation: { type: Type.STRING }
+            },
+            required: ["explanation"]
+          }
+        }
+      });
+
+      const text = response.text || "{}";
       res.json(JSON.parse(text));
-    } catch (error) {
-      console.error("Extraction Proxy Error:", error);
-      res.status(500).json({ error: "Falha na análise do documento via servidor. Verifique se o documento é legível." });
+    } catch (error: any) {
+      console.error("AI Explanation Error Details:", error);
+      if (isGeminiQuotaError(error)) {
+        return res.status(429).json({ error: "Limite da IA atingido.", isQuotaError: true });
+      }
+      res.status(500).json({ error: "Falha ao explicar resultados." });
     }
   });
 
@@ -75,34 +141,45 @@ async function startServer() {
       ATIVIDADE (Última semana): ${JSON.stringify(wearables)}
       
       Instruções:
-      1. Se houver mais de um exame do mesmo tipo em datas diferentes, compare-os (ex: "Sua taxa X melhorou Y% desde a última medição").
+      1. Se houver mais de um exame do mesmo tipo em datas diferentes, compare-os.
       2. Gere um BioScore (0-100) que reflita o estado atual comparado ao histórico.
       3. Seja específico e técnico, mas motivador.
       
       Responda estritamente em formato JSON: 
       { 
-        "text": "Análise detalhada aqui incluindo comparações históricas se existirem", 
-        "actionableTip": "Uma dica prática baseada na sua maior necessidade atual", 
+        "text": "Análise detalhada aqui", 
+        "actionableTip": "Dica prática", 
         "bioScore": 85 
       }`;
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.0-flash",
+        model: "gemini-flash-latest",
         contents: prompt,
         config: {
-          responseMimeType: "application/json"
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              text: { type: Type.STRING },
+              actionableTip: { type: Type.STRING },
+              bioScore: { type: Type.NUMBER }
+            },
+            required: ["text", "actionableTip", "bioScore"]
+          }
         }
       });
 
-      let text = response.text || "{}";
-
-      // Clean up markdown if present
-      if (text.includes("```")) {
-        text = text.replace(/```json\n?|```/g, "").trim();
-      }
-      
+      const text = response.text || "{}";
       res.json(JSON.parse(text));
-    } catch (error) {
+    } catch (error: any) {
+      if (isGeminiQuotaError(error)) {
+        console.warn("[Gemini API] Quota exceeded on insight request.");
+        return res.status(429).json({ 
+          error: "Limite de uso da IA atingido para geração de insights. Tente novamente em 20 segundos.",
+          isQuotaError: true
+        });
+      }
+
       console.error("AI Insight Proxy Error:", error);
       res.status(500).json({ error: "Falha ao gerar insight via servidor." });
     }

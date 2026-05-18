@@ -1,21 +1,28 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously as firebaseSignInAnonymously, signOut as firebaseSignOut, GoogleAuthProvider, signInWithPopup } from 'firebase/auth';
-import { getFirestore, doc, getDocFromServer } from 'firebase/firestore';
+import { getFirestore, doc, getDocFromServer, enableIndexedDbPersistence, initializeFirestore, CACHE_SIZE_UNLIMITED } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
+import { OperationType } from '../types';
 
 const app = initializeApp(firebaseConfig);
-// @ts-ignore
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
-export const auth = getAuth(app);
 
-export enum OperationType {
-  CREATE = 'create',
-  UPDATE = 'update',
-  DELETE = 'delete',
-  LIST = 'list',
-  GET = 'get',
-  WRITE = 'write',
-}
+// Initialize Firestore with settings for better performance and persistence
+export const db = initializeFirestore(app, {
+  cacheSizeBytes: CACHE_SIZE_UNLIMITED,
+}, firebaseConfig.firestoreDatabaseId);
+
+// Enable persistence to reduce read quotas and support offline mode
+enableIndexedDbPersistence(db).catch((err) => {
+  if (err.code === 'failed-precondition') {
+    // Multiple tabs open, persistence can only be enabled in one tab at a time.
+    console.warn('Firestore persistence failed: Multiple tabs open');
+  } else if (err.code === 'unimplemented') {
+    // The current browser does not support all of the features required to enable persistence
+    console.warn('Firestore persistence failed: Browser not supported');
+  }
+});
+
+export const auth = getAuth(app);
 
 export interface FirestoreErrorInfo {
   error: string;
@@ -37,7 +44,9 @@ export interface FirestoreErrorInfo {
 
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errorMessage = error instanceof Error ? error.message : String(error);
-  const isQuotaExceeded = errorMessage.includes('Quota exceeded') || errorMessage.includes('quota limit exceeded');
+  const isQuotaExceeded = errorMessage.includes('Quota limit exceeded') || 
+                          errorMessage.includes('quota limit exceeded') ||
+                          errorMessage.includes('Quota exceeded');
   
   const errInfo: FirestoreErrorInfo = {
     error: errorMessage,
@@ -56,7 +65,13 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
+
+  if (isQuotaExceeded) {
+    console.warn(`[Firestore Quota] Limit exceeded for ${operationType} on ${path}. App will switch to offline mode.`);
+  } else {
+    console.error(`[Firestore Error] ${operationType} failed on ${path}:`, errorMessage);
+  }
+
   throw new Error(JSON.stringify(errInfo));
 }
 
@@ -83,14 +98,3 @@ export const loginWithGoogle = async () => {
 };
 
 export const logout = () => firebaseSignOut(auth);
-
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration.");
-    }
-  }
-}
-testConnection();

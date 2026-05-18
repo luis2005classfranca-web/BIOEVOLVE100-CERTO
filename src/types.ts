@@ -10,6 +10,7 @@ export interface ExamRecord {
   value: number;
   unit: string;
   referenceRange: string;
+  category?: string;
   label?: string;
   confidence?: number;
   isCalculated?: boolean;
@@ -44,4 +45,13 @@ export interface UserProfile {
   age?: number;
   weight?: number;
   height?: number;
+}
+
+export enum OperationType {
+  CREATE = 'create',
+  UPDATE = 'update',
+  DELETE = 'delete',
+  LIST = 'list',
+  GET = 'get',
+  WRITE = 'write',
 }

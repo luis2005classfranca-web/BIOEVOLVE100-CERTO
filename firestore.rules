@@ -20,28 +20,21 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow get: if isOwner(userId);
-      allow create, update: if isOwner(userId) && 
-        request.resource.data.keys().hasAll(['bio_score', 'updatedAt']) &&
-        request.resource.data.bio_score is number &&
-        request.resource.data.updatedAt is string;
+      allow create, update: if isOwner(userId);
 
       match /exams/{examId} {
         allow list, get: if isOwner(userId);
-        allow create: if isOwner(userId) && 
-          request.resource.data.user_id == request.auth.uid;
-        allow delete: if isOwner(userId);
+        allow create, delete: if isOwner(userId);
       }
 
       match /wearable_data/{dataId} {
         allow list, get: if isOwner(userId);
-        allow create: if isOwner(userId) && 
-          request.resource.data.user_id == request.auth.uid;
+        allow create: if isOwner(userId);
       }
 
       match /insights/{insightId} {
         allow list, get: if isOwner(userId);
-        allow create: if isOwner(userId) && 
-          request.resource.data.user_id == request.auth.uid;
+        allow create: if isOwner(userId);
       }
     }
   }
